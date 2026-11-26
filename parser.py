@@ -352,6 +352,14 @@ def parse_packet(pkt, index: int) -> PacketRecord:
             rec.skip_reason = f"DNS 解析失败: {type(exc).__name__}"
         if dns_info is not None:
             rec.dns = dns_info
+            # 域名取不到但包本身可读：保留基础信息，标记为部分解析
+            try:
+                qdcount = int(pkt[DNS].qdcount or 0)
+            except Exception:
+                qdcount = 0
+            if qdcount and dns_info.query_name is None and rec.status == "ok":
+                rec.status = "partial"
+                rec.skip_reason = "DNS 域名解析失败（已保留基础包信息）"
         elif rec.status == "ok":
             rec.status = "partial"
             rec.skip_reason = "端口 53 但 DNS 解析失败"
@@ -508,8 +516,9 @@ def _print_summary(result: ParseResult) -> None:
         return
     s = result.stats
     print(f"分析文件：{result.source}")
-    print(f"数据包：{s.total:,}")
-    print(f"成功解析：{s.parsed:,}（{s.coverage}%）  部分解析：{s.partial}  跳过：{s.skipped}")
+    print(f"原始包数：{s.total:,}")
+    print(f"解析覆盖率：{s.coverage}%（成功 {s.parsed:,} + 部分 {s.partial} / 共 {s.total}）")
+    print(f"跳过：{s.skipped}")
     print(f"总流量：{format_bytes(s.total_bytes)}")
     print(f"解析耗时：{s.elapsed_ms:.1f} ms（{s.packets_per_second} 包/秒）")
     print("协议分布：" + "  ".join(f"{k}={v}" for k, v in sorted(s.protocol_counts.items())))
