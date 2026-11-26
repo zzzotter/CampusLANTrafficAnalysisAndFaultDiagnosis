@@ -3,8 +3,10 @@
 用法：python samples/生成测试抓包.py
 产出：
     normal.pcap        正常混合流量（TCP 握手 + HTTP + DNS 成功 + UDP + ARP + IPv6）
+    normal.pcapng      与 normal.pcap 同内容的 PCAPNG 格式（验证两种格式都能读）
     dns_fail.pcap      8 次 DNS 失败响应（NXDOMAIN / SERVFAIL），用于触发 B 的 DNS 规则
     tcp_abnormal.pcap  SYN 无响应、RST 拒绝、重传，用于触发 B 的 TCP 规则
+    dns_malformed.pcap DNS 报文损坏（域名被截断），验证"解析失败保留基础信息"
     nonip.pcap         只有 ARP，用于测"非 IP 数据包跳过"
     empty.pcap         0 字节空文件
     corrupt.pcap       头部损坏、无法识别格式的文件
@@ -16,6 +18,7 @@ import struct
 from scapy.all import (
     Ether, IP, IPv6, TCP, UDP, DNS, DNSQR, DNSRR, ARP, Raw, wrpcap,
 )
+from scapy.utils import PcapNgWriter
 
 OUT = os.path.dirname(os.path.abspath(__file__))
 
@@ -72,6 +75,13 @@ def build_normal():
                 IPv6(src="fe80::1", dst="fe80::2") / UDP(sport=5353, dport=5353) / Raw(load=b"mdns"))
     path = os.path.join(OUT, "normal.pcap")
     wrpcap(path, pkts)
+
+    # 同一批包再写一份 PCAPNG，用于验证"两种格式都能读"
+    ng_path = os.path.join(OUT, "normal.pcapng")
+    writer = PcapNgWriter(ng_path)
+    for p in pkts:
+        writer.write(p)
+    writer.close()
     return path, len(pkts)
 
 
@@ -122,6 +132,30 @@ def build_tcp_abnormal():
 
 
 # --------------------------------------------------------------------------
+# 3.5) dns_malformed.pcap —— DNS 报文损坏，但 IP/UDP 基础信息完整
+# --------------------------------------------------------------------------
+def build_dns_malformed():
+    """3 个包：1 个正常查询、1 个问题区被截断的查询、1 个正常响应。
+
+    损坏包在 DNS 头里声明 qdcount=1，但问题区只有 2 字节（名字被截断），
+    scapy 解析域名时必然失败。期望结果：src_ip/dst_ip/端口/protocol/length 仍然完整，
+    dns.query_name 为 None，status="partial"。
+    """
+    def raw_query(load, src="192.168.1.40"):
+        return eth(src, DNS_SERVER, UDP(sport=51000, dport=53) / Raw(load=load))
+
+    hdr = struct.pack(">HHHHHH", 0x3000, 0x0100, 1, 0, 0, 0)   # id / flags / qdcount / ...
+    pkts = [
+        dns_query("www.example.com", 0x3456, src="192.168.1.40"),
+        raw_query(hdr + b"\x04ab"),                            # 截断的域名
+        dns_response("www.example.com", 0x3456, rcode=0, src="192.168.1.40"),
+    ]
+    path = os.path.join(OUT, "dns_malformed.pcap")
+    wrpcap(path, pkts)
+    return path, len(pkts)
+
+
+# --------------------------------------------------------------------------
 # 4) nonip.pcap / empty.pcap / corrupt.pcap
 # --------------------------------------------------------------------------
 def build_nonip():
@@ -153,8 +187,12 @@ def build_corrupt():
 if __name__ == "__main__":
     made = []
     made.append(("normal.pcap", *build_normal()))
+    ng = os.path.join(OUT, "normal.pcapng")
+    if os.path.exists(ng):
+        made.append(("normal.pcapng", ng, 12))
     made.append(("dns_fail.pcap", *build_dns_fail()))
     made.append(("tcp_abnormal.pcap", *build_tcp_abnormal()))
+    made.append(("dns_malformed.pcap", *build_dns_malformed()))
     made.append(("nonip.pcap", *build_nonip()))
     made.append(("empty.pcap", *build_empty()))
     made.append(("corrupt.pcap", *build_corrupt()))

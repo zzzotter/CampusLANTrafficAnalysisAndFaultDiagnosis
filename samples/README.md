@@ -13,8 +13,10 @@ python samples/生成测试抓包.py
 | 文件 | 来源 | 预期包数 | 预期解析结果 | 用途 |
 | --- | --- | --- | --- | --- |
 | `normal.pcap` | 脚本构造（Ether/IP/TCP/UDP/DNS/ARP/IPv6） | 12 | packets=11、skipped_count=1（ARP），覆盖率 91.67% | 正常流量基线；验证基础字段与协议分布 |
+| `normal.pcapng` | 脚本构造，与 `normal.pcap` 同内容的 PCAPNG 格式 | 12 | packets=11、skipped_count=1，覆盖率 91.67% | 验证两种文件格式都能读 |
 | `dns_fail.pcap` | 脚本构造（8 次失败响应 + 1 次正常） | 18 | packets=18、skipped_count=0，覆盖率 100% | 触发 DNS 失败规则；验证 rcode / 方向解析 |
 | `tcp_abnormal.pcap` | 脚本构造（5 SYN 无响应 + 4 RST + 2 重传 + 1 正常） | 14 | packets=14、skipped_count=0，覆盖率 100% | 触发 TCP 异常规则；验证标志位与 seq |
+| `dns_malformed.pcap` | 脚本构造（1 正常查询 + 1 域名截断的坏查询 + 1 正常响应） | 3 | packets=3、skipped_count=0，其中 1 条 `status="partial"` | 验证"DNS 解析失败仍保留 IP/端口/长度" |
 | `nonip.pcap` | 脚本构造（ARP + 未知以太网类型） | 4 | packets=0、skipped_count=4，覆盖率 0% | 验证"非 IP 数据包"跳过逻辑 |
 | `empty.pcap` | 脚本构造（0 字节） | 0 | 抛 `PcapError`："文件为空（0 字节）" | 验证空文件提示 |
 | `corrupt.pcap` | 脚本构造（magic 错误 + 垃圾字节） | 0 | 抛 `PcapError`："文件格式无法识别" | 验证损坏文件提示 |
@@ -24,6 +26,8 @@ python samples/生成测试抓包.py
 - `normal.pcap`：TCP 三次握手（SYN / SYN-ACK / ACK）、HTTP 请求与响应、DNS 查询与成功响应、NTP 的 UDP 包、一个 ARP 包（故意用来验证跳过）、一个 IPv6 的 UDP 包（验证 IPv6 基础字段）。
 - `dns_fail.pcap`：6 次 NXDOMAIN + 2 次 SERVFAIL，全部来自 `192.168.1.35`，用于让 B 的 DNS 规则稳定触发；另加 1 次成功查询作为对照，避免"整份文件全是异常"导致规则无法体现比例。
 - `tcp_abnormal.pcap`：同一目的 `203.0.113.9:8080` 的 5 次 SYN 没有任何应答（连接失败线索），4 条 RST+ACK（被拒绝），2 条完全相同的重传包（同四元组、同 seq、同载荷），最后 1 条正常握手做对照。
+- `normal.pcapng`：与 `normal.pcap` 完全相同的 12 个包，只是容器格式换成 PCAPNG，用来证明"两种格式读出来一致"。
+- `dns_malformed.pcap`：DNS 头里声明 1 个问题，但问题区被截断（名字只有 2 字节），scapy 解析域名必然失败。用于证明"报文坏了也不丢基础信息"：`src_ip`/`dst_ip`/端口/`protocol`/`length` 齐全，`dns.query_name=None`，`status="partial"`。
 - `nonip.pcap`：3 个 ARP 广播 + 1 个未知以太网类型帧，全部不是 IP 流量，用于证明"跳过而不是崩溃"。
 - `empty.pcap` / `corrupt.pcap`：只用于验证错误提示，不参与统计。
 
