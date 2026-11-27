@@ -1,6 +1,6 @@
 """生成 A 模块的测试抓包（可重复运行，不依赖真实抓包环境）。
 
-用法：python samples/生成测试抓包.py
+用法：python scripts/gen_samples.py
 产出：
     normal.pcap        正常混合流量（TCP 握手 + HTTP + DNS 成功 + UDP + ARP + IPv6）
     normal.pcapng      与 normal.pcap 同内容的 PCAPNG 格式（验证两种格式都能读）
@@ -14,13 +14,18 @@
 
 import os
 import struct
+import sys
 
 from scapy.all import (
     Ether, IP, IPv6, TCP, UDP, DNS, DNSQR, DNSRR, ARP, Raw, wrpcap,
 )
-from scapy.utils import PcapNgWriter
 
-OUT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from pcap_to_pcapng import convert  # noqa: E402  同目录工具，用于派生 pcapng
+
+# 样例固定写到仓库的 samples/ 目录，而不是脚本所在目录
+OUT = str(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "samples"))
+os.makedirs(OUT, exist_ok=True)
 
 HOST = "192.168.1.20"      # 客户端
 HOST_B = "192.168.1.35"    # 另一个客户端（DNS 异常设备）
@@ -76,12 +81,11 @@ def build_normal():
     path = os.path.join(OUT, "normal.pcap")
     wrpcap(path, pkts)
 
-    # 同一批包再写一份 PCAPNG，用于验证"两种格式都能读"
+    # 同一批包再写一份 PCAPNG，用于验证"两种格式都能读"。
+    # 从刚写出的 pcap 派生，而不是用 PcapNgWriter 再写一遍：两种写入器是独立代码路径，
+    # 分别写会让时间戳出现偏差，而样例声明"两种格式内容完全相同"。
     ng_path = os.path.join(OUT, "normal.pcapng")
-    writer = PcapNgWriter(ng_path)
-    for p in pkts:
-        writer.write(p)
-    writer.close()
+    convert(path, ng_path)
     return path, len(pkts)
 
 

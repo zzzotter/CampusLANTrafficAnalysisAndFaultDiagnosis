@@ -9,6 +9,7 @@ from config import (
     TCP_RESET_MIN_PACKETS,
     TCP_RESET_RATE_THRESHOLD,
     TCP_RESET_WINDOW_SECONDS,
+    TREND_BUCKET_SECONDS,
 )
 
 
@@ -56,6 +57,38 @@ def analyze_packets(packets: Iterable[dict]) -> dict:
         "protocol_counts": dict(protocol_counts),
         "device_ranking": devices,
     }
+
+
+def compute_trend(
+    packets: Iterable[dict],
+    *,
+    bucket_seconds: float = TREND_BUCKET_SECONDS,
+) -> list[dict]:
+    """按固定时间桶统计包数与字节数，用于展示流量时间趋势。
+
+    没有数据包的桶补 0，保证返回的时间轴连续。返回的时间桶起点为 Unix 秒数。
+    """
+    if bucket_seconds <= 0:
+        raise ValueError("时间桶宽度必须大于零")
+
+    buckets: dict[int, list[int]] = defaultdict(lambda: [0, 0])
+    for packet in packets:
+        key = int(packet["timestamp"] // bucket_seconds)
+        buckets[key][0] += 1
+        buckets[key][1] += packet["length"]
+
+    if not buckets:
+        return []
+
+    trend = []
+    for key in range(min(buckets), max(buckets) + 1):
+        packet_count, byte_count = buckets.get(key, (0, 0))
+        trend.append({
+            "start_time": key * bucket_seconds,
+            "packet_count": packet_count,
+            "bytes": byte_count,
+        })
+    return trend
 
 
 def detect_dns_failures(

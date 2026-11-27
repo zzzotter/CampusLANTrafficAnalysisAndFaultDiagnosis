@@ -1,0 +1,19 @@
+[project]
+name = "campus-lan-traffic"
+version = "0.1.0"
+description = "局域网流量分析与故障诊断系统（课程设计）"
+requires-python = ">=3.10"
+dependencies = ["scapy>=2.5,<3.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+filterwarnings = [
+    # scapy 2.6 对 DNS 的 qd/an/ns/ar 字段发出 DeprecationWarning（一次运行 84 条），
+    # 项目锁定 scapy<3.0，这里只屏蔽这一条，避免噪音掩盖真正的问题。
+    "ignore:The DNS fields 'qd', 'an', 'ns' and 'ar' are now PacketListField",
+]

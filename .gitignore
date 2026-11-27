@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 本地临时目录（pip / 测试用）
+.tmp/
+.cache/
+
+# Windows 下 pip 有时把临时构建目录建在当前工作目录，会污染 git status
+pip-*/
+
+# 测试与工具缓存
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 运行时导出的报告（目录结构保留，内容不入库）
+reports/*
+!reports/.gitkeep
+
+# 真实抓包不入库（演示统一用 samples/ 里的构造样例）
+samples/real*.pcap
+samples/real*.pcapng
