@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>局域网实时监控</title>
+  <style>
+    :root {
+      --bg: #0f172a; --panel: #1e293b; --line: #334155;
+      --text: #e2e8f0; --muted: #94a3b8;
+      --ok: #22c55e; --fail: #ef4444; --accent: #38bdf8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg); color: var(--text);
+      font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      padding: 24px; line-height: 1.5;
+    }
+    header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+    h1 { font-size: 20px; font-weight: 600; }
+    .badge {
+      font-size: 12px; padding: 2px 8px; border-radius: 999px;
+      border: 1px solid var(--line); color: var(--muted);
+    }
+    .badge.sample { color: #fbbf24; border-color: #fbbf24; }
+    .badge.live { color: var(--ok); border-color: var(--ok); }
+    .updated { margin-left: auto; color: var(--muted); font-size: 13px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+    .panel h2 { font-size: 14px; color: var(--muted); margin-bottom: 12px; font-weight: 600; }
+    .node { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+    .node:last-child { border-bottom: none; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+    .dot.ok { background: var(--ok); } .dot.fail { background: var(--fail); }
+    .node .name { flex: 1; }
+    .node .meta { color: var(--muted); font-size: 12px; }
+    .stat { display: flex; justify-content: space-between; padding: 6px 0; }
+    .stat .v { font-variant-numeric: tabular-nums; }
+    .alert { padding: 10px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 10px; }
+    .alert .type { color: var(--fail); font-weight: 600; }
+    .alert .reason { color: var(--muted); font-size: 13px; margin-top: 4px; }
+    .empty { color: var(--muted); font-size: 13px; }
+    .banner {
+      padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 14px;
+      display: none;
+    }
+    .banner.error { display: block; background: #7f1d1d; color: #fecaca; border: 1px solid #ef4444; }
+    .banner.nodata { display: block; background: #1e293b; color: var(--muted); border: 1px solid var(--line); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>局域网实时监控与故障诊断</h1>
+    <span id="source-badge" class="badge">—</span>
+    <span class="updated" id="updated">正在连接…</span>
+  </header>
+
+  <div id="error-banner" class="banner error"></div>
+
+  <div class="grid">
+    <section class="panel">
+      <h2>节点状态（主动探测）</h2>
+      <div id="nodes"></div>
+    </section>
+
+    <section class="panel">
+      <h2>流量统计（最近时间窗）</h2>
+      <div id="window"></div>
+    </section>
+
+    <section class="panel">
+      <h2>异常告警</h2>
+      <div id="alerts"></div>
+    </section>
+
+    <section class="panel">
+      <h2>采集队列</h2>
+      <div id="queue"></div>
+    </section>
+  </div>
+
+  <script>
+    const REFRESH_MS = 2000;
+    const el = (id) => document.getElementById(id);
+
+    function fmtTime(t) {
+      if (t == null) return "—";
+      return new Date(t * 1000).toLocaleString("zh-CN", { hour12: false });
+    }
+    function fmtBytes(n) {
+      if (n == null) return "—";
+      if (n < 1024) return n + " B";
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+      return (n / 1024 / 1024).toFixed(2) + " MB";
+    }
+    function fmtLatency(ms) {
+      return ms == null ? "—" : ms.toFixed(1) + " ms";
+    }
+    function esc(s) {
+      return String(s ?? "").replace(/[&<>"']/g, (c) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    function render(state) {
+      el("updated").textContent = "最近更新：" + fmtTime(state.updated_at);
+      el("source-badge").textContent =
+        state.source === "live" ? "实时数据" : "样例数据";
+      el("source-badge").className = "badge " + (state.source === "live" ? "live" : "sample");
+
+      // 节点状态
+      const nodes = (state.probes || []).map((p) => `
+        <div class="node">
+          <span class="dot ${p.status === "ok" ? "ok" : "fail"}"></span>
+          <span class="name">${esc(p.target)}</span>
+          <span class="meta">
+            ${esc(p.type)} · ${fmtLatency(p.latency_ms)} · ${fmtTime(p.last_probe_at)}
+            ${p.error ? "<br>错误：" + esc(p.error) : ""}
+          </span>
+        </div>`).join("");
+      el("nodes").innerHTML = nodes || '<div class="empty">暂无探测数据</div>';
+
+      // 流量统计
+      const w = state.window || {};
+      el("window").innerHTML = `
+        <div class="stat"><span>时间窗</span><span class="v">${esc(w.seconds ?? "—")} 秒</span></div>
+        <div class="stat"><span>包数</span><span class="v">${esc(w.packets ?? "—")}</span></div>
+        <div class="stat"><span>字节数</span><span class="v">${fmtBytes(w.bytes)}</span></div>`;
+
+      // 告警
+      const alerts = (state.alerts || []).map((a) => `
+        <div class="alert">
+          <div class="type">${esc(a.type)} · ${esc(a.device_ip)}</div>
+          <div class="reason">${esc(a.reason)}</div>
+          <div class="reason">${fmtTime(a.start_time)} ~ ${fmtTime(a.end_time)}</div>
+        </div>`).join("");
+      el("alerts").innerHTML = alerts || '<div class="empty">当前没有告警</div>';
+
+      // 队列
+      const q = state.queue || {};
+      el("queue").innerHTML = `
+        <div class="stat"><span>当前长度</span><span class="v">${esc(q.length ?? "—")}</span></div>
+        <div class="stat"><span>累计丢弃</span><span class="v">${esc(q.dropped ?? "—")}</span></div>
+        <div class="stat"><span>采集错误</span><span class="v">${esc(q.capture_errors ?? "—")}</span></div>
+        <div class="stat"><span>最近错误</span><span class="v">${esc(q.last_error ?? "无")}</span></div>`;
+    }
+
+    function showError(msg) {
+      const b = el("error-banner");
+      b.textContent = msg;
+      b.className = "banner error";
+    }
+    function clearError() {
+      el("error-banner").className = "banner error";
+      el("error-banner").textContent = "";
+    }
+
+    async function refresh() {
+      try {
+        const resp = await fetch("/api/state");
+        if (!resp.ok) throw new Error("接口返回 " + resp.status);
+        const state = await resp.json();
+        clearError();
+        render(state);
+      } catch (err) {
+        showError("无法获取状态：" + err.message + "。请确认后端已启动。");
+      }
+    }
+
+    refresh();
+    setInterval(refresh, REFRESH_MS);
+  </script>
+</body>
+</html>
