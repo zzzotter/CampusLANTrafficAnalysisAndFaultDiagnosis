@@ -22,7 +22,10 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import queue
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -36,8 +39,58 @@ except ImportError as exc:  # pragma: no cover
 
 from parser import PacketRecord, format_ts, parse_packet
 
-__version__ = "1.2"          # 改动后必须同步递增，命令行会打印出来
+__version__ = "1.3"          # 改动后必须同步递增，命令行会打印出来
 DEFAULT_QUEUE_MAXSIZE = 5000
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+CONFIG_KEYS = ("iface", "queue_maxsize", "bpf")
+
+
+def load_config(path: Optional[str] = None) -> dict:
+    """读 config.json 的 capture 段；文件不存在/写坏都返回空配置，不阻断启动。
+
+    优先级：命令行参数 > 环境变量 SNIFFER_IFACE > config.json > 自动选网卡
+    """
+    path = path or CONFIG_PATH
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as exc:
+        print(f"[提示] 配置文件 {path} 读取失败（{exc}），改用默认设置。", file=sys.stderr)
+        return {}
+    cap = data.get("capture")
+    if not isinstance(cap, dict):
+        return {}
+    return {k: cap[k] for k in CONFIG_KEYS if k in cap and cap[k] not in (None, "")}
+
+
+def save_config(iface: Optional[str] = None, queue_maxsize: Optional[int] = None,
+                bpf: Optional[str] = None, path: Optional[str] = None) -> str:
+    """把当前设置写进 config.json（保留其它段），返回写入路径。"""
+    path = path or CONFIG_PATH
+    data: dict = {}
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+        except Exception:
+            data = {}
+    cap = data.get("capture")
+    if not isinstance(cap, dict):
+        cap = {}
+    if iface:
+        cap["iface"] = iface
+    if queue_maxsize:
+        cap["queue_maxsize"] = int(queue_maxsize)
+    if bpf:
+        cap["bpf"] = bpf
+    data["capture"] = cap
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return path
+
+
 PROBE_TIMEOUT_MS = 200
 
 
@@ -262,14 +315,21 @@ class PacketSniffer:
     def __init__(
         self,
         iface: Optional[str] = None,
-        queue_maxsize: int = DEFAULT_QUEUE_MAXSIZE,
+        queue_maxsize: Optional[int] = None,
         bpf: Optional[str] = None,
         promisc: bool = False,
         on_error: Optional[Callable[[str], None]] = None,
+        config_path: Optional[str] = None,
     ) -> None:
-        self.iface = iface
-        self.queue_maxsize = max(1, int(queue_maxsize))
-        self.bpf = bpf or None
+        cfg = load_config(config_path)
+        env_iface = os.environ.get("SNIFFER_IFACE") or None
+        # 优先级：显式参数 > 环境变量 > 配置文件 > 自动选择（start() 时才做）
+        self.iface = iface or env_iface or cfg.get("iface") or None
+        self.iface_source = ("参数" if iface else "环境变量" if env_iface
+                             else "配置文件" if cfg.get("iface") else "自动选择")
+        self.queue_maxsize = max(1, int(queue_maxsize or cfg.get("queue_maxsize")
+                                   or DEFAULT_QUEUE_MAXSIZE))
+        self.bpf = bpf or cfg.get("bpf") or None
         self.promisc = promisc
         self.pkt_queue: "queue.Queue[dict]" = queue.Queue(maxsize=self.queue_maxsize)
         self.stats_data = SnifferStats(queue_maxsize=self.queue_maxsize)
@@ -472,9 +532,27 @@ def _main(argv: Optional[Iterable[str]] = None) -> int:
     ap.add_argument("--iface", default=None, help="网卡名或描述，如 以太网 / WLAN")
     ap.add_argument("--duration", type=float, default=10, help="抓包秒数，默认 10")
     ap.add_argument("--bpf", default=None, help="BPF 过滤，如 tcp udp dns")
-    ap.add_argument("--queue-max", type=int, default=DEFAULT_QUEUE_MAXSIZE)
+    ap.add_argument("--queue-max", type=int, default=None)
+    ap.add_argument("--save-config", action="store_true", help="把当前 iface/queue-max 写入 config.json")
+    ap.add_argument("--show-config", action="store_true", help="显示配置文件路径与内容")
     ap.add_argument("--replay", default=None, help="改用 pcap 文件回放（无需权限）")
     args = ap.parse_args(list(argv) if argv is not None else None)
+
+    if args.show_config:
+        print(f"配置文件：{CONFIG_PATH}（{'存在' if os.path.exists(CONFIG_PATH) else '不存在'}）")
+        print(json.dumps(load_config(), ensure_ascii=False, indent=2))
+        print(f"环境变量 SNIFFER_IFACE：{os.environ.get('SNIFFER_IFACE') or '（未设置）'}")
+        return 0
+
+    if args.save_config:
+        if not args.iface:
+            print("[失败] --save-config 需要同时给出 --iface，例如："
+                  'python sniffer.py --save-config --iface "以太网"')
+            return 2
+        path = save_config(args.iface, args.queue_max, args.bpf)
+        print(f"已写入 {path}")
+        print(json.dumps(load_config(), ensure_ascii=False, indent=2))
+        return 0
 
     if args.list:
         print(f"sniffer v{__version__}")
@@ -510,7 +588,8 @@ def _main(argv: Optional[Iterable[str]] = None) -> int:
         return 0
 
     sniffer = PacketSniffer(args.iface, queue_maxsize=args.queue_max, bpf=args.bpf)
-    print(f"\n开始抓包：{sniffer.iface or '（自动选择网卡）'}，持续 {args.duration:g} 秒"
+    print(f"\n开始抓包：{sniffer.iface or '（自动选择网卡）'}（来源：{sniffer.iface_source}），"
+          f"持续 {args.duration:g} 秒"
           f"（Ctrl+C 可提前停止）")
     try:
         sniffer.start()
@@ -545,3 +624,4 @@ def _main(argv: Optional[Iterable[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(_main())
+
